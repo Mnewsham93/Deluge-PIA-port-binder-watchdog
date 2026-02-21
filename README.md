@@ -2,6 +2,9 @@
 
 A Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct incoming/outgoing network interfaces and forwarded ports, while proactively mitigating `libtorrent` memory allocation problems on Windows.
 
+
+WARNING: This script requires Windows Smart App Control (SAC) to be disabled. Without it being disabled Windows will block Deluged.exe from running after a day or two. 
+
 ## Features
 * **Strict Interface Binding:** Continuously monitors the VPN adapter (`wgpia0`) and ensures Deluge only communicates through the active VPN IP and forwarded port.
 * **Leak Protection:** Automatically halts and restarts the Deluge daemon if the VPN connection drops or the port changes.
