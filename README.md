@@ -1,6 +1,6 @@
 # Deluge & PIA Port Binder Watchdog
 
-A robust suite of Windows scripts designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct incoming/outgoing network interfaces and forwarded ports, while proactively mitigating `libtorrent` memory allocation problems on Windows.
+A Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct incoming/outgoing network interfaces and forwarded ports, while proactively mitigating `libtorrent` memory allocation problems on Windows.
 
 ## Features
 * **Strict Interface Binding:** Continuously monitors the VPN adapter (`wgpia0`) and ensures Deluge only communicates through the active VPN IP and forwarded port.
