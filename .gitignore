@@ -1,0 +1,9 @@
+# Watchdog & Deluge local files
+*.log
+*.log.*
+watchdog_pid.txt
+deluged.pid
+
+# Windows system files
+Thumbs.db
+Desktop.ini
