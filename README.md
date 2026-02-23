@@ -1,50 +1,35 @@
-# Deluge & PIA Port Binder Watchdog
+# Deluge & PIA Port Binder Watchdog (v1.2.0)
 
-A Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct incoming/outgoing network interfaces and forwarded ports, while proactively mitigating `libtorrent` memory allocation problems on Windows.
+A robust Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct network interfaces and forwarded ports while proactively mitigating `libtorrent` memory issues and VPN "ghost ports" on Windows.
 
-WARNING: This script requires Windows Smart App Control (SAC) to be disabled. Without it being disabled Windows will block Deluged.exe from running after a day or two. 
+> **WARNING:** This script requires Windows Smart App Control (SAC) to be disabled. Without it disabled, Windows may block `deluged.exe` from executing after 24-48 hours.
 
 ## Features
-* **Full-Bind Interface Locking:** Automatically synchronizes both the `listen_interface` (incoming) and `outgoing_interface` (outgoing/leak protection) to the active VPN IP.
-* **Traffic-Aware Failsafe:** Monitors active peer connections. If the daemon is running but reports **0 total peers** for more than 10 minutes, the script triggers a re-bind to resolve "Ghost Ports" or VPN API hangs.
-* **Leak Protection:** Force-disables UPnP/NAT-PMP and automatically halts the Deluge daemon if the VPN connection drops or the IP subnet changes.
-* **Memory Management (48h Cycle):** Combats Windows `libtorrent` memory leaks by safely tracking uptime and restarting `deluged.exe` every 48 hours.
-* **Comprehensive Logging:** Maintains a 100MB rolling log of heartbeats, VPN resyncs, connection health events, and maintenance cycles.
-* **Log Analyzer Utility:** Includes a PowerShell script to parse logs and generate a 30-day rolling health summary of your torrenting environment.
+* **Full-Bind Interface Locking:** Automatically synchronizes both the `listen_interface` (incoming) and `outgoing_interface` (leak protection) to the active VPN IP.
+* **Proactive Sledgehammer Cycle (New in v1.2.0):** Native integration with `piactl` to perform a 24-hour maintenance cycle, forcing a fresh VPN tunnel and new port assignment daily to prevent stale connections.
+* **Stopwatch State Tracking:** Bypasses Windows Session Isolation and "Access Denied" errors by maintaining an internal uptime counter in a local state file.
+* **Leak Protection:** Force-disables UPnP/NAT-PMP and halts the Deluge daemon if the VPN connection drops or the IP subnet changes.
+* **Comprehensive Logging:** Maintains a 100MB rolling log of heartbeats, VPN resyncs, maintenance cycles, and system IDs.
+* **Log Analyzer Utility:** Includes a PowerShell dashboard to parse logs and display real-time uptime and Sledgehammer countdowns.
 
 ## Included Files
 * `deluge_watchdog.bat` - The core monitoring script.
-* `AnalyzeLogs.ps1` - PowerShell script to parse the watchdog logs.
-* `AnalyzeLogs.bat` - Simple batch runner to execute the analyzer while bypassing execution policies.
+* `AnalyzeLogs.ps1` - PowerShell script to parse logs and display the health dashboard.
+* `AnalyzeLogs.bat` - Simple batch runner that auto-elevates to Administrator to run the analyzer.
 
 ## Configuration & Setup
 
 ### 1. Script Variables
-Before running the watchdog, open `deluge_watchdog.bat` and verify the paths in the `:: 4. CONFIG` section match your local environment:
+Open `deluge_watchdog.bat` and verify the paths in the `:: 4. CONFIG` section:
 * `REAL_USER_PATH`: Your Windows user directory (e.g., C:\Users\Michael).
 * `DEL_DIR`: The installation directory for Deluge.
 * `PIA_CTL`: The path to `piactl.exe`.
-* `D_PASS`: Add your local Deluge daemon password (found in your `auth` file).
+* `D_PASS`: Your local Deluge daemon password.
 
 ### 2. Windows Task Scheduler (Recommended)
-To ensure the watchdog runs continuously in the background, set it up via Windows Task Scheduler using a dedicated local admin account:
-
-**General Tab:**
-* Run with highest privileges.
-* Configure for Windows 10/11.
-
-**Triggers Tab (Create Two Triggers):**
-1. At log on (Any user).
-2. Daily at 12:00 PM -> Repeat task every 15 minutes for a duration of: Indefinitely.
-
-**Actions Tab:**
-* Action: Start a program.
-* Program/script: Path to `deluge_watchdog.bat`.
-
-**Settings Tab:**
-* Check: "If the task fails, restart every 1 minute" (Attempt 3 times).
-* Check: "If the running task does not end when requested, force it to stop."
-* Ensure no conditional checkboxes (like "Start only if on AC power") are active.
+Set up via Task Scheduler with "Highest Privileges" to ensure continuous background operation:
+1. **Trigger:** At log on and repeat every 15 minutes.
+2. **Action:** Start a program -> Path to `deluge_watchdog.bat`.
 
 ## Usage
-Once the scheduled task is running, the watchdog operates silently in the background. To check the health of your setup, simply double-click `AnalyzeLogs.bat`. It will output a clean dashboard showing your Deluge uptime, time until the next 48h memory wipe, and a count of any crashes, health-checks, or VPN resyncs over the last 30 days.
+The watchdog operates silently. To check the health of your setup, run `AnalyzeLogs.bat`. It provides a dashboard showing Deluge uptime, the countdown to the next VPN refresh, and a 30-day history of network events.
