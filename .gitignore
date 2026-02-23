@@ -2,7 +2,9 @@
 *.log
 *.log.*
 watchdog_pid.txt
+watchdog_uptime.txt
 deluged.pid
+daemon_start.txt
 
 # Windows system files
 Thumbs.db
