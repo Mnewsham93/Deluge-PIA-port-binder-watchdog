@@ -1,143 +1,99 @@
-# ==============================================================================
-# WATCHDOG TIMER ANALYZER v5.4
-# Tracks 48h Maintenance Cycles, Network Resyncs, & System Boots (Rolling 30 Days)
-# ==============================================================================
+<#
+.SYNOPSIS
+    Parses watchdog.log files to provide a health summary of the Deluge & PIA Watchdog.
+#>
 
-$logDir = "C:\ProgramData\deluge"
-$logPath = "$logDir\watchdog.log"
-$archivePath = "$logDir\watchdog.log.1"
+$LogDir = "C:\ProgramData\deluge"
+$LogFiles = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending
+$StateFile = "C:\Users\Michael\AppData\Roaming\deluge\watchdog_uptime.txt"
 
-# 1. READ LOGS
-if (-not (Test-Path $logPath)) { Write-Host "Log file not found." -F Red; exit }
-$allLines = Get-Content $logPath -ReadCount 0
-if (Test-Path $archivePath) {
-    $archiveLines = Get-Content $archivePath -ReadCount 0
-    $combinedLines = $archiveLines + $allLines
-} else {
-    $combinedLines = $allLines
+if ($LogFiles.Count -eq 0) {
+    Write-Host "No watchdog logs found in $LogDir." -ForegroundColor Red
+    Start-Sleep -Seconds 5
+    exit
 }
 
-# --- 30-DAY ROLLING WINDOW FILTER ---
-$cutoffDate = (Get-Date).AddDays(-30)
+# --- Initialize Counters ---
+$WatchdogRestarts = 0
+$VpnDrops = 0
+$NetworkUpdates = 0
+$SledgehammerCycles = 0
+$CurrentBoundIP = "Unknown"
 
-function Is-Recent ($line) {
-    # Extracts the date from the custom bracket format: [Mon 02/16/2026 14:30:07.16]
-    if ($line -match '\[[A-Za-z]{3}\s+(.*?)\.\d{2,3}\]') {
-        try {
-            return ([datetime]$matches[1] -ge $cutoffDate)
-        } catch { return $false }
-    }
-    return $false
-}
-
-# 2. PARSE EVENTS (Filtered to last 30 days)
-$maintenanceEvents = $combinedLines | Where-Object { $_ -match '\[MAINTENANCE\]' -and (Is-Recent $_) }
-$rawCrashEvents    = $combinedLines | Where-Object { $_ -match '\[WARNING\] Daemon down' -and (Is-Recent $_) }
-$vpnEvents         = $combinedLines | Where-Object { $_ -match '\[UPDATE\]' -and (Is-Recent $_) }
-$heartbeats        = $combinedLines | Where-Object { $_ -match 'HEARTBEAT' }
-
-# --- SYSTEM BOOT INTERCEPTION ---
-$crashEvents = @()
-$bootEventsCount = 0
-
-$eventLogAccessible = $true
-$systemBoots = @()
-
-try {
-    # Fetch boot events. It easily holds 30 days of boots with your 500MB log size.
-    $systemBoots = Get-WinEvent -FilterHashtable @{LogName='System'; Id=6005} -MaxEvents 50 -ErrorAction Stop | Select-Object -ExpandProperty TimeCreated
-} catch {
-    if ($_.FullyQualifiedErrorId -match "NoMatchingEventsFound") {
-        $systemBoots = @() 
-    } else {
-        $eventLogAccessible = $false 
+# --- Parse Logs ---
+Write-Host "Analyzing $($LogFiles.Count) log file(s)..." -ForegroundColor Cyan
+foreach ($File in $LogFiles) {
+    $Lines = Get-Content $File.FullName
+    foreach ($Line in $Lines) {
+        if ($Line -match "\[STARTUP\]") { $WatchdogRestarts++ }
+        if ($Line -match "\[ERROR\] VPN Interface down") { $VpnDrops++ }
+        if ($Line -match "\[UPDATE\]") { $NetworkUpdates++ }
+        if ($Line -match "\[MAINTENANCE\] Disconnecting VPN") { $SledgehammerCycles++ }
+        if ($Line -match "Bound to: ([\d\.]+)") { $CurrentBoundIP = $matches[1] }
     }
 }
 
-foreach ($line in $rawCrashEvents) {
-    $isBoot = $false
-    if ($line -match '\[[A-Za-z]{3}\s+(.*?)\.\d{2,3}\]') {
-        try {
-            $logTime = [datetime]$matches[1]
-            if ($eventLogAccessible -and $systemBoots.Count -gt 0) {
-                foreach ($boot in $systemBoots) {
-                    # If the script logged a crash within 5 mins of Windows booting, it's just a restart
-                    if ([math]::Abs(($logTime - $boot).TotalMinutes) -le 5) {
-                        $isBoot = $true
-                        break
-                    }
-                }
-            }
-        } catch {}
-    }
+# --- Calculate Uptime & Next Cycle ---
+$DaemonProcess = Get-Process -Name "deluged" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if ($DaemonProcess) {
+    $DaemonStatus = "RUNNING"
+    $StatusColor = "Green"
     
-    if ($isBoot) {
-        $bootEventsCount++
+    if (Test-Path $StateFile) {
+        try {
+            $Raw = (Get-Content $StateFile) -join ""
+            $Clean = $Raw -replace '\D',''
+            if ($Clean -eq "") { $Clean = "0" }
+            
+            $UptimeSeconds = [int]$Clean
+            
+            $UptimeSpan = [timespan]::fromseconds($UptimeSeconds)
+            # THE FIX: Explicitly cast the Double to an Integer so the string formatter doesn't crash
+            $TotalHours = [int][math]::Floor($UptimeSpan.TotalHours)
+            $UptimeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalHours, $UptimeSpan.Minutes, $UptimeSpan.Seconds
+            
+            $SecondsToSledgehammer = 86400 - $UptimeSeconds
+            if ($SecondsToSledgehammer -lt 0) { $SecondsToSledgehammer = 0 }
+            
+            $SledgeSpan = [timespan]::fromseconds($SecondsToSledgehammer)
+            # THE FIX: Explicitly cast the Double to an Integer
+            $TotalSledgeHours = [int][math]::Floor($SledgeSpan.TotalHours)
+            $SledgeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalSledgeHours, $SledgeSpan.Minutes, $SledgeSpan.Seconds
+        } catch {
+            $UptimeString = "[Formatting Error - Check Console]"
+            $SledgeString = "[Formatting Error - Check Console]"
+            $StatusColor = "Yellow"
+        }
     } else {
-        $crashEvents += $line
+        $UptimeString = "[Waiting for State File]"
+        $SledgeString = "[Waiting for State File]"
+        $StatusColor = "Yellow"
     }
-}
-# --------------------------------
-
-# 3. CALCULATE STATUS
-$currentUptime = 0
-$timeRemaining = 48
-
-if ($heartbeats.Count -gt 0) {
-    $lastBeat = $heartbeats[-1]
-    if ($lastBeat -match 'Active:\s*(\d+)h') {
-        $currentUptime = [int]$matches[1]
-    }
-    $timeRemaining = 48 - $currentUptime
-    if ($timeRemaining -lt 0) { $timeRemaining = 0 }
+} else {
+    $UptimeString = "N/A"
+    $SledgeString = "N/A"
+    $DaemonStatus = "OFFLINE"
+    $StatusColor = "Red"
 }
 
-# 4. REPORT
+# --- Output Dashboard ---
 Clear-Host
-Write-Host "`n============================================" -ForegroundColor Cyan
-Write-Host "      WATCHDOG TIMER ANALYZER v5.4" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
-
-$statusColor = "Green"
-if ($timeRemaining -lt 2) { $statusColor = "Yellow" }
-if ($crashEvents.Count -gt 5) { $statusColor = "Red" }
-
-Write-Host " [DELUGE UPTIME] " -NoNewline
-Write-Host "${currentUptime} Hours" -ForegroundColor White
-Write-Host " [NEXT WIPE]     " -NoNewline
-Write-Host "In $timeRemaining Hours" -ForegroundColor $statusColor
-
-Write-Host "`n--------------------------------------------" -ForegroundColor DarkGray
-Write-Host " EVENT HISTORY (Last 30 Days)" -ForegroundColor Gray
-Write-Host "--------------------------------------------" -ForegroundColor DarkGray
-
-Write-Host " [MAINTENANCE]   " -NoNewline
-Write-Host "$($maintenanceEvents.Count)" -ForegroundColor Green -NoNewline
-Write-Host " (Scheduled 48h Resets)"
-
-Write-Host " [VPN RESYNCS]   " -NoNewline
-Write-Host "$($vpnEvents.Count)" -ForegroundColor Cyan -NoNewline
-Write-Host " (IP/Port Corrections)"
-
-Write-Host " [SYSTEM BOOTS]  " -NoNewline
-if ($eventLogAccessible) {
-    Write-Host "$bootEventsCount" -ForegroundColor Yellow -NoNewline
-    Write-Host " (Expected Restarts)"
-} else {
-    Write-Host "ERROR" -ForegroundColor Magenta -NoNewline
-    Write-Host " (Need Admin Rights)"
-}
-
-Write-Host " [CRASHES]       " -NoNewline
-if ($crashEvents.Count -gt 0) {
-    Write-Host "$($crashEvents.Count)" -ForegroundColor Red
-} else {
-    Write-Host "0" -ForegroundColor White
-}
-
-Write-Host "`n============================================" -ForegroundColor Cyan
-Write-Host "        LAST 5 LOG ENTRIES"
-Write-Host "============================================" -ForegroundColor Cyan
-$allLines | Select-Object -Last 5
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "  DELUGE WATCHDOG v1.1.6 HEALTH DASHBOARD " -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
+Write-Host "Current VPN IP:    $CurrentBoundIP"
+Write-Host "Daemon Uptime:     $UptimeString"
+Write-Host "Next Sledgehammer: $SledgeString"
+Write-Host ""
+Write-Host "--- 30-Day Activity History ---" -ForegroundColor Yellow
+Write-Host "Script Restarts:       $WatchdogRestarts"
+Write-Host "VPN Drops Detected:    $VpnDrops"
+Write-Host "Network Updates:       $NetworkUpdates"
+Write-Host "24h Sledgehammers:     $SledgehammerCycles"
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "Press any key to exit..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
