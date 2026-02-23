@@ -39,7 +39,7 @@ set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
 set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
-call :LOG "[STARTUP] Watchdog v1.1.6 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.2.0 active (ID: %MYPID%)"
 
 :: Initialize Uptime
 set /a D_UPTIME=0
