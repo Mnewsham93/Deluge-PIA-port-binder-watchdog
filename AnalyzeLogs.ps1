@@ -14,24 +14,32 @@ if ($LogFiles.Count -eq 0) {
 }
 
 # --- Initialize Counters ---
-$WatchdogRestarts = 0
 $VpnDrops = 0
 $NetworkUpdates = 0
 $SledgehammerCycles = 0
-$CurrentBoundIP = "Unknown"
+$CurrentVPN = "Unknown"
 
 # --- Parse Logs ---
 Write-Host "Analyzing $($LogFiles.Count) log file(s)..." -ForegroundColor Cyan
+
+# Reverse the array to read from oldest to newest, ensuring the variables hold the latest data
+[array]::Reverse($LogFiles)
+
 foreach ($File in $LogFiles) {
     $Lines = Get-Content $File.FullName
     foreach ($Line in $Lines) {
-        if ($Line -match "\[STARTUP\]") { $WatchdogRestarts++ }
         if ($Line -match "\[ERROR\] VPN Interface down") { $VpnDrops++ }
         if ($Line -match "\[UPDATE\]") { $NetworkUpdates++ }
         if ($Line -match "\[MAINTENANCE\] Disconnecting VPN") { $SledgehammerCycles++ }
-        if ($Line -match "Bound to: ([\d\.]+)") { $CurrentBoundIP = $matches[1] }
+        # Capture the combined IP and Port from the init or config lines
+        if ($Line -match "Monitoring: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
+        elseif ($Line -match "Enforcing Full Bind: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
     }
 }
+
+# Re-fetch the newest log specifically to grab the last 5 entries
+$NewestLog = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$Last5Lines = Get-Content $NewestLog.FullName | Where-Object { $_.Trim() -ne "" } | Select-Object -Last 5
 
 # --- Calculate Uptime & Next Cycle ---
 $DaemonProcess = Get-Process -Name "deluged" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -49,7 +57,6 @@ if ($DaemonProcess) {
             $UptimeSeconds = [int]$Clean
             
             $UptimeSpan = [timespan]::fromseconds($UptimeSeconds)
-            # THE FIX: Explicitly cast the Double to an Integer so the string formatter doesn't crash
             $TotalHours = [int][math]::Floor($UptimeSpan.TotalHours)
             $UptimeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalHours, $UptimeSpan.Minutes, $UptimeSpan.Seconds
             
@@ -57,7 +64,6 @@ if ($DaemonProcess) {
             if ($SecondsToSledgehammer -lt 0) { $SecondsToSledgehammer = 0 }
             
             $SledgeSpan = [timespan]::fromseconds($SecondsToSledgehammer)
-            # THE FIX: Explicitly cast the Double to an Integer
             $TotalSledgeHours = [int][math]::Floor($SledgeSpan.TotalHours)
             $SledgeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalSledgeHours, $SledgeSpan.Minutes, $SledgeSpan.Seconds
         } catch {
@@ -80,19 +86,27 @@ if ($DaemonProcess) {
 # --- Output Dashboard ---
 Clear-Host
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  DELUGE WATCHDOG v1.1.6 HEALTH DASHBOARD " -ForegroundColor Cyan
+Write-Host "  DELUGE WATCHDOG v1.2.2 HEALTH DASHBOARD " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
-Write-Host "Current VPN IP:    $CurrentBoundIP"
+Write-Host "Current VPN IP:    $CurrentVPN"
 Write-Host "Daemon Uptime:     $UptimeString"
 Write-Host "Next Sledgehammer: $SledgeString"
 Write-Host ""
 Write-Host "--- 30-Day Activity History ---" -ForegroundColor Yellow
-Write-Host "Script Restarts:       $WatchdogRestarts"
 Write-Host "VPN Drops Detected:    $VpnDrops"
 Write-Host "Network Updates:       $NetworkUpdates"
 Write-Host "24h Sledgehammers:     $SledgehammerCycles"
+Write-Host ""
+Write-Host "--- Last 5 Watchdog Events ---" -ForegroundColor Yellow
+if ($Last5Lines) {
+    foreach ($line in $Last5Lines) {
+        Write-Host $line -ForegroundColor Gray
+    }
+} else {
+    Write-Host "No recent events found." -ForegroundColor DarkGray
+}
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Press any key to exit..."
