@@ -5,7 +5,11 @@ cd \
 
 :: 1. ADMIN CHECK
 net session >nul 2>&1
-if %errorLevel% neq 0 (echo [ERROR] ADMIN REQ & pause & exit /b)
+if %errorLevel% neq 0 (
+    echo [ERROR] This script must be run as Administrator.
+    pause
+    exit /b
+)
 
 :: 2. PATHS & LOGGING
 set "LOG_DIR=C:\ProgramData\deluge"
@@ -39,14 +43,15 @@ set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
 set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
-call :LOG "[STARTUP] Watchdog v1.2.0 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.2.2 active (ID: %MYPID%)"
 
-:: Initialize Uptime
+:: Initialize Uptime from state file
 set /a D_UPTIME=0
 if exist "%STATE_FILE%" (
     for /f "usebackq delims=" %%A in ("%STATE_FILE%") do set /a D_UPTIME=%%A 2>nul
 )
 
+:: 5. INITIAL VPN SYNC
 :VPN_CHECK
 set "NEW_IP="
 for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /C:"IP Address"') do set "NEW_IP=%%a"
@@ -67,18 +72,26 @@ set "OLD_PORT=%RAW_PORT%"
 set "OLD_IP=%NEW_IP%"
 call :LOG "[INIT] Monitoring: %OLD_IP%:%OLD_PORT%"
 
+:: ============================================
+::                 MONITOR_LOOP
+:: ============================================
 :MONITOR_LOOP
+:: 1. INSTANCE HANDOFF
 if exist "%LOCK_FILE%" (
     set /p L_CHECK=<"%LOCK_FILE%"
-    if NOT "!L_CHECK: =!"=="%MYPID%" (exit /b 0)
+    if NOT "!L_CHECK: =!"=="%MYPID%" (
+        call :LOG "[EXIT] Newer instance detected (!L_CHECK!). Closing %MYPID%."
+        exit /b 0
+    )
 )
 
+:: 2. 24H SLEDGEHAMMER CHECK
 if !D_UPTIME! GEQ %MAINTENANCE_LIMIT% (
-    call :LOG "[MAINTENANCE] Uptime !D_UPTIME!s exceeds 24h limit. Initiating VPN Sledgehammer..."
-    call :SLEDGEHAMMER
-    goto VPN_CHECK
+    call :LOG "[MAINTENANCE] Uptime !D_UPTIME!s exceeds limit. Initiating Sledgehammer..."
+    goto SLEDGEHAMMER
 )
 
+:: 3. DAEMON CHECK
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
 if errorlevel 1 (
     call :LOG "[WARNING] Daemon down. Starting with forced binding..."
@@ -86,6 +99,7 @@ if errorlevel 1 (
     goto VPN_CHECK
 )
 
+:: 4. HEARTBEAT LOGGING
 set /a HB_TIMER+=1
 if !HB_TIMER! GEQ %H_INT% (
     set /a "UP_HOURS=!D_UPTIME!/3600"
@@ -93,51 +107,71 @@ if !HB_TIMER! GEQ %H_INT% (
     set /a HB_TIMER=0
 )
 
+:: 5. NETWORK INTEGRITY CHECKS
 set "NEW_IP="
 for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /C:"IP Address"') do set "NEW_IP=%%a"
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "NEW_PORT=%%i"
 
-if not "!NEW_IP!"=="!OLD_IP!" (goto APPLY_UPDATE)
-call :VALIDATE_PORT "!NEW_PORT!"
-if "!PORT_VALID!"=="1" (
-    if not "!NEW_PORT!"=="!OLD_PORT!" (goto APPLY_UPDATE)
+if not "!NEW_IP!"=="!OLD_IP!" (
+    call :LOG "[UPDATE] VPN IP Changed. Re-Binding..."
+    goto APPLY_UPDATE
 )
 
+call :VALIDATE_PORT "!NEW_PORT!"
+if "!PORT_VALID!"=="1" (
+    if not "!NEW_PORT!"=="!OLD_PORT!" (
+        call :LOG "[UPDATE] Port Changed. Re-Configuring..."
+        goto APPLY_UPDATE
+    )
+)
+
+:: 6. WAIT & STOPWATCH
 set /a W_SEC=0
 :WAIT_LOOP
 timeout /t 1 /nobreak >nul
 set /a W_SEC+=1
 set /a D_UPTIME+=1
+title 24h Timer: !D_UPTIME!/%MAINTENANCE_LIMIT%s ^| ID: %MYPID%
 if !W_SEC! LSS %CHECK_INT% goto WAIT_LOOP
+
 echo !D_UPTIME!> "%STATE_FILE%"
 goto MONITOR_LOOP
 
-:START_BOUND_DAEMON
-if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
-start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %NEW_IP%
-set /a D_UPTIME=0
-echo 0 > "%STATE_FILE%"
-timeout /t 5 >nul
-"%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %NEW_IP%; config -s listen_ports (%RAW_PORT%,%RAW_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
-goto :EOF
-
-:APPLY_UPDATE
-taskkill /F /IM deluged.exe >nul 2>&1
-set "OLD_IP=!NEW_IP!"
-set "OLD_PORT=!NEW_PORT!"
-set "RAW_PORT=!NEW_PORT!"
-call :START_BOUND_DAEMON
-goto VPN_CHECK
+:: ============================================
+::                SUBROUTINES
+:: ============================================
 
 :SLEDGEHAMMER
 "%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; halt; quit" >nul 2>&1
 timeout /t 15 >nul
 taskkill /F /IM deluged.exe >nul 2>&1
+call :LOG "[MAINTENANCE] Disconnecting VPN..."
 "%PIA_CTL%" disconnect
-timeout /t 10 >nul
+timeout /t 20 >nul
+call :LOG "[MAINTENANCE] Reconnecting VPN..."
 "%PIA_CTL%" connect
-timeout /t 15 >nul
+timeout /t 30 >nul
+set /a D_UPTIME=0
+echo 0 > "%STATE_FILE%"
+goto VPN_CHECK
+
+:START_BOUND_DAEMON
+if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
+start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %NEW_IP%
+timeout /t 8 >nul
+call :LOG "[CONFIG] Enforcing Full Bind: %NEW_IP%:%RAW_PORT%"
+"%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %NEW_IP%; config -s listen_ports (%RAW_PORT%,%RAW_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
 goto :EOF
+
+:APPLY_UPDATE
+taskkill /F /IM deluged.exe >nul 2>&1
+if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
+timeout /t 5 >nul
+set "OLD_IP=!NEW_IP!"
+set "OLD_PORT=!NEW_PORT!"
+set "RAW_PORT=!NEW_PORT!"
+call :START_BOUND_DAEMON
+goto VPN_CHECK
 
 :LOG
 set "M=[%date% %time%] [ID:%MYPID%] %~1"
