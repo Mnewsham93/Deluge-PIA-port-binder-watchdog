@@ -1,15 +1,15 @@
-# Deluge & PIA Port Binder Watchdog (v1.2.2)
+# Deluge & PIA Port Binder Watchdog (v1.2.3)
 
-A robust Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct network interfaces and forwarded ports while proactively mitigating `libtorrent` memory issues and VPN "ghost ports" on Windows.
+A robust Windows script designed to monitor Deluge and the Private Internet Access (PIA) VPN. This watchdog ensures Deluge is bound to the correct network interfaces and forwarded ports while proactively mitigating `libtorrent` memory issues, VPN "ghost ports", and headless zombie processes on Windows.
 
 > **WARNING:** This script requires Windows Smart App Control (SAC) to be disabled. Without it disabled, Windows may block `deluged.exe` from executing after 24-48 hours.
 
 ## Features
 * **Full-Bind Interface Locking:** Automatically synchronizes both the `listen_interface` (incoming) and `outgoing_interface` (leak protection) to the active VPN IP and dynamic Port.
 * **Proactive Sledgehammer Cycle:** Native integration with `piactl` to perform a 24-hour maintenance cycle, forcing a fresh VPN tunnel and new port assignment daily to prevent stale connections.
+* **Force-Rebind Architecture (v1.2.3):** Detects zombified daemon threads after network drops and actively double-taps the `deluged.exe` process to guarantee clean IP bindings on headless setups.
 * **Stopwatch State Tracking:** Bypasses Windows Session Isolation and "Access Denied" errors by maintaining an internal uptime counter in a local state file (`watchdog_uptime.txt`).
-* **Leak Protection:** Force-disables UPnP/NAT-PMP and halts the Deluge daemon if the VPN connection drops or the IP subnet changes.
-* **Log Analyzer Utility:** Includes a PowerShell dashboard to parse logs, displaying real-time uptime, Sledgehammer countdowns, combined IP/Port data, and a tail of the last 5 events.
+* **Log Analyzer Utility:** Includes a PowerShell dashboard to parse logs, displaying real-time uptime, Sledgehammer countdowns, combined IP/Port data, and a tail of recent events.
 
 ## Included Files
 * `deluge_watchdog.bat` - The core monitoring script.
@@ -29,6 +29,3 @@ Open `deluge_watchdog.bat` and verify the paths in the `:: 4. CONFIG` section:
 Set up via Task Scheduler with "Highest Privileges" to ensure continuous background operation:
 1. **Trigger:** At log on and repeat every 15 minutes.
 2. **Action:** Start a program -> Path to `deluge_watchdog.bat`.
-
-## Usage
-The watchdog operates silently in the background. To check the health of your setup, run `AnalyzeLogs.bat`. It provides a clean dashboard showing Deluge uptime, the active VPN port, and recent background activities.
