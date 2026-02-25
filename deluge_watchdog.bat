@@ -43,7 +43,8 @@ set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
 set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
-call :LOG "[STARTUP] Watchdog v1.2.2 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.2.3 active (ID: %MYPID%)"
+set "FORCE_REBIND=0"
 
 :: Initialize Uptime from state file
 set /a D_UPTIME=0
@@ -91,11 +92,16 @@ if !D_UPTIME! GEQ %MAINTENANCE_LIMIT% (
     goto SLEDGEHAMMER
 )
 
-:: 3. DAEMON CHECK
+:: 3. DAEMON CHECK & ENFORCEMENT
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
 if errorlevel 1 (
-    call :LOG "[WARNING] Daemon down. Starting with forced binding..."
-    call :START_BOUND_DAEMON
+    call :LOG "[WARNING] Daemon down. Flagging for forced binding..."
+    set "FORCE_REBIND=1"
+)
+
+if "!FORCE_REBIND!"=="1" (
+    set "FORCE_REBIND=0"
+    call :RESTART_DAEMON
     goto VPN_CHECK
 )
 
@@ -113,15 +119,17 @@ for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nu
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "NEW_PORT=%%i"
 
 if not "!NEW_IP!"=="!OLD_IP!" (
-    call :LOG "[UPDATE] VPN IP Changed. Re-Binding..."
-    goto APPLY_UPDATE
+    call :LOG "[UPDATE] VPN IP Changed (!OLD_IP! -^> !NEW_IP!). Re-Binding..."
+    set "FORCE_REBIND=1"
+    goto VPN_CHECK
 )
 
 call :VALIDATE_PORT "!NEW_PORT!"
 if "!PORT_VALID!"=="1" (
     if not "!NEW_PORT!"=="!OLD_PORT!" (
-        call :LOG "[UPDATE] Port Changed. Re-Configuring..."
-        goto APPLY_UPDATE
+        call :LOG "[UPDATE] Port Changed (!OLD_PORT! -^> !NEW_PORT!). Re-Configuring..."
+        set "FORCE_REBIND=1"
+        goto VPN_CHECK
     )
 )
 
@@ -143,7 +151,7 @@ goto MONITOR_LOOP
 
 :SLEDGEHAMMER
 "%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; halt; quit" >nul 2>&1
-timeout /t 15 >nul
+timeout /t 10 >nul
 taskkill /F /IM deluged.exe >nul 2>&1
 call :LOG "[MAINTENANCE] Disconnecting VPN..."
 "%PIA_CTL%" disconnect
@@ -153,25 +161,20 @@ call :LOG "[MAINTENANCE] Reconnecting VPN..."
 timeout /t 30 >nul
 set /a D_UPTIME=0
 echo 0 > "%STATE_FILE%"
+set "FORCE_REBIND=1"
 goto VPN_CHECK
 
-:START_BOUND_DAEMON
-if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
-start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %NEW_IP%
-timeout /t 8 >nul
-call :LOG "[CONFIG] Enforcing Full Bind: %NEW_IP%:%RAW_PORT%"
-"%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %NEW_IP%; config -s listen_ports (%RAW_PORT%,%RAW_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
-goto :EOF
-
-:APPLY_UPDATE
+:RESTART_DAEMON
+call :LOG "[CONFIG] Enforcing clean bind to: %OLD_IP%:%OLD_PORT%"
 taskkill /F /IM deluged.exe >nul 2>&1
 if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
-timeout /t 5 >nul
-set "OLD_IP=!NEW_IP!"
-set "OLD_PORT=!NEW_PORT!"
-set "RAW_PORT=!NEW_PORT!"
-call :START_BOUND_DAEMON
-goto VPN_CHECK
+timeout /t 3 >nul
+:: Double-tap kill in case a UI service resurrected it during the timeout
+taskkill /F /IM deluged.exe >nul 2>&1
+start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %OLD_IP%
+timeout /t 8 >nul
+"%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %OLD_IP%; config -s listen_ports (%OLD_PORT%,%OLD_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
+goto :EOF
 
 :LOG
 set "M=[%date% %time%] [ID:%MYPID%] %~1"
