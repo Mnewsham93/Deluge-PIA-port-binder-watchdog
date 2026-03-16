@@ -86,7 +86,7 @@ if ($DaemonProcess) {
 # --- Output Dashboard ---
 Clear-Host
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  DELUGE WATCHDOG v1.2.2 HEALTH DASHBOARD " -ForegroundColor Cyan
+Write-Host "  DELUGE WATCHDOG v1.2.4 HEALTH DASHBOARD " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
