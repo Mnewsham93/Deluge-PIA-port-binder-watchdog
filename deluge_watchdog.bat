@@ -43,7 +43,7 @@ set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
 set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
-call :LOG "[STARTUP] Watchdog v1.2.3 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.2.4 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
 
 :: Initialize Uptime from state file
@@ -60,12 +60,15 @@ for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "RAW_PORT
 
 if "%NEW_IP%"=="" (
     call :LOG "[ERROR] VPN Interface down. Waiting..."
+    :: V1.2.4 FIX: If we lost the interface, we MUST rebind when it returns.
+    set "FORCE_REBIND=1"
     timeout /t %RETRY% >nul & goto VPN_CHECK
 )
 
 call :VALIDATE_PORT "%RAW_PORT%"
 if "!PORT_VALID!"=="0" (
     call :LOG "[WARNING] Port [%RAW_PORT%] not ready. Waiting..."
+    set "FORCE_REBIND=1"
     timeout /t 10 >nul & goto VPN_CHECK
 )
 
@@ -169,7 +172,6 @@ call :LOG "[CONFIG] Enforcing clean bind to: %OLD_IP%:%OLD_PORT%"
 taskkill /F /IM deluged.exe >nul 2>&1
 if exist "%D_PID%" del /f /q "%D_PID%" 2>nul
 timeout /t 3 >nul
-:: Double-tap kill in case a UI service resurrected it during the timeout
 taskkill /F /IM deluged.exe >nul 2>&1
 start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %OLD_IP%
 timeout /t 8 >nul
