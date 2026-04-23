@@ -26,15 +26,16 @@ set "H_RAW=%H_RAW: =0%"
 set "MYPID=%H_RAW%%M_RAW%-%RANDOM%"
 echo %MYPID%> "%LOCK_FILE%"
 
-:: 4. CONFIG - REDACTED FOR GITHUB
-set "REAL_USER_PATH=C:\Users\YOUR_USERNAME"
+:: 4. CONFIG
+set "PRIMARY_USER=YourUsername"
+set "REAL_USER_PATH=C:\Users\YourUsername"
 set "DEL_DIR=C:\Program Files\Deluge"
 set "PIA_CTL=C:\Program Files\Private Internet Access\piactl.exe"
 set "ADAPTER=wgpia0"
 set "D_CONF=%REAL_USER_PATH%\AppData\Roaming\deluge"
 set "D_PID=%D_CONF%\deluged.pid"
 set "D_USER=localclient"
-set "D_PASS=YOUR_PASSWORD_HERE"
+set "D_PASS=your_deluge_password"
 set "D_PORT=58846"
 set "STATE_FILE=%D_CONF%\watchdog_uptime.txt"
 
@@ -43,7 +44,16 @@ set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
 set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
-call :LOG "[STARTUP] Watchdog v1.2.4 active (ID: %MYPID%)"
+:: ============================================
+::    4.5 PRIMARY USER SESSION CHECK
+:: ============================================
+:: Silently kills headless instances if the primary user's desktop isn't active
+tasklist /FI "USERNAME eq %USERDOMAIN%\%PRIMARY_USER%" /FI "IMAGENAME eq explorer.exe" 2>nul | find /I "explorer.exe" >nul
+if %errorlevel% neq 0 (
+    exit /b 0
+)
+
+call :LOG "[STARTUP] Watchdog v1.3 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
 
 :: Initialize Uptime from state file
@@ -54,13 +64,22 @@ if exist "%STATE_FILE%" (
 
 :: 5. INITIAL VPN SYNC
 :VPN_CHECK
+:: INSTANCE HANDOFF (Placed here to prevent error-loop stacking)
+if exist "%LOCK_FILE%" (
+    set /p L_CHECK=<"%LOCK_FILE%"
+    if NOT "!L_CHECK: =!"=="%MYPID%" (
+        call :LOG "[EXIT] Newer instance detected (!L_CHECK!). Closing %MYPID%."
+        exit /b 0
+    )
+)
+
 set "NEW_IP="
 for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /C:"IP Address"') do set "NEW_IP=%%a"
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "RAW_PORT=%%i"
 
 if "%NEW_IP%"=="" (
     call :LOG "[ERROR] VPN Interface down. Waiting..."
-    :: V1.2.4 FIX: If we lost the interface, we MUST rebind when it returns.
+    :: If we lost the interface, we MUST rebind when it returns.
     set "FORCE_REBIND=1"
     timeout /t %RETRY% >nul & goto VPN_CHECK
 )
@@ -149,7 +168,7 @@ echo !D_UPTIME!> "%STATE_FILE%"
 goto MONITOR_LOOP
 
 :: ============================================
-::                SUBROUTINES
+::                 SUBROUTINES
 :: ============================================
 
 :SLEDGEHAMMER
