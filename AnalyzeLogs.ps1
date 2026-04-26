@@ -5,7 +5,8 @@
 
 $LogDir = "C:\ProgramData\deluge"
 $LogFiles = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending
-$StateFile = "C:\Users\Michael\AppData\Roaming\deluge\watchdog_uptime.txt"
+# Uses Environment Variable to remove hardcoded user paths
+$StateFile = "$env:APPDATA\deluge\watchdog_uptime.txt"
 
 if ($LogFiles.Count -eq 0) {
     Write-Host "No watchdog logs found in $LogDir." -ForegroundColor Red
