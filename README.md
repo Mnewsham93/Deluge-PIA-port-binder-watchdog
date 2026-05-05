@@ -43,16 +43,16 @@ To ensure 24/7 coverage, configure a Windows Task for the core watchdog:
 ---
 
 ### 📊 Optional: Lifetime Traffic Tracking (Sidecar)
-For users who want to track their total data movement (RX/TX) directly on the Health Dashboard, we provide a decoupled `TrafficPoller.ps1` sidecar. 
+For users who want to track their total data movement (RX/TX) directly on the Health Dashboard, we provide a decoupled `DelugeTrafficPoller.ps1` sidecar. 
 
 By querying the Windows NDIS network stack instead of the Deluge RPC port, this script tracks bandwidth safely without risking a killswitch hang if the daemon freezes. It automatically calculates deltas to survive VPN adapter resets.
 
 **Installation:**
-1. Copy `/Optional/Telemetry/TrafficPoller.ps1` to your Deluge `ProgramData` folder (or leave in current directory).
+1. Copy `/Optional/Telemetry/DelugeTrafficPoller.ps1` to your Deluge `ProgramData` folder (or leave in current directory).
 2. Create a **new** Windows Task Scheduler task:
    * **Trigger:** "At log on" AND "Repeat task every 15 minutes" indefinitely.
    * **Action:** "Start a program" -> `powershell.exe`
-   * **Add arguments:** `-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Path\To\TrafficPoller.ps1"`
+   * **Add arguments:** `-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Path\To\DelugeTrafficPoller.ps1"`
 3. The `AnalyzeLogs` dashboard will automatically detect the new data and display your total bandwidth. (Functions perfectly with or without this sidecar running).
 
 ---
@@ -65,7 +65,7 @@ By querying the Windows NDIS network stack instead of the Deluge RPC port, this 
 
 ### Version History
 
-* **v1.4.1 (The Modularity Update):** Implemented incident debouncing in Log Analyzer to group VPN drops accurately. Added optional decoupled `TrafficPoller.ps1` sidecar for bandwidth tracking. Added atomic 50MB log rotation to core script.
+* **v1.4.1 (The Modularity Update):** Implemented incident debouncing in Log Analyzer to group VPN drops accurately. Added optional decoupled `DelugeTrafficPoller.ps1` sidecar for bandwidth tracking. Added atomic 50MB log rotation to core script.
 * **v1.4.0:** Implemented Atomic OS Uptime sync; Universal Regex IP extraction; Atomic State Writes; Bulletproof User Domain checks.
 * **v1.3.1:** Updated `AnalyzeLogs.ps1` with portable environment variables to remove hardcoded user paths; Added native vs. virtualized performance documentation.
 * **v1.3.0:** Added Headless Storm Protection via `explorer.exe` session gate; relocated instance handoff logic.
