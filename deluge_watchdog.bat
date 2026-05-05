@@ -47,24 +47,30 @@ set /a "MAINTENANCE_LIMIT=86400"
 :: ============================================
 ::    4.5 PRIMARY USER SESSION CHECK
 :: ============================================
-:: Silently kills headless instances if the primary user's desktop isn't active
-tasklist /FI "USERNAME eq %USERDOMAIN%\%PRIMARY_USER%" /FI "IMAGENAME eq explorer.exe" 2>nul | find /I "explorer.exe" >nul
+:: Bulletproof check: Looks for explorer.exe owned by PRIMARY_USER regardless of domain
+tasklist /V /FI "IMAGENAME eq explorer.exe" 2>nul | find /I "%PRIMARY_USER%" >nul
 if %errorlevel% neq 0 (
     exit /b 0
 )
 
-call :LOG "[STARTUP] Watchdog v1.3 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.4 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
+set "D_UPTIME=0"
 
-:: Initialize Uptime from state file
-set /a D_UPTIME=0
-if exist "%STATE_FILE%" (
-    for /f "usebackq delims=" %%A in ("%STATE_FILE%") do set /a D_UPTIME=%%A 2>nul
+:: ============================================
+::    4.6 THE "HANDOFF SYNC"
+:: ============================================
+:: Syncs the Batch clock to the actual process time to prevent drift
+tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
+if not errorlevel 1 (
+    set "PS_UPTIME="
+    for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
+    if not "!PS_UPTIME!"=="" set "D_UPTIME=!PS_UPTIME!"
 )
 
 :: 5. INITIAL VPN SYNC
 :VPN_CHECK
-:: INSTANCE HANDOFF (Placed here to prevent error-loop stacking)
+:: INSTANCE HANDOFF
 if exist "%LOCK_FILE%" (
     set /p L_CHECK=<"%LOCK_FILE%"
     if NOT "!L_CHECK: =!"=="%MYPID%" (
@@ -73,13 +79,17 @@ if exist "%LOCK_FILE%" (
     )
 )
 
+:: v1.4 UNIVERSAL REGEX (Parser-Safe & Latch-Protected)
 set "NEW_IP="
-for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /C:"IP Address"') do set "NEW_IP=%%a"
+for /f "tokens=* delims=" %%A in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /R "[0-9]\.[0-9]" ^| findstr /V "[/]"') do (
+    if "!NEW_IP!"=="" (
+        for %%B in (%%A) do set "NEW_IP=%%B"
+    )
+)
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "RAW_PORT=%%i"
 
 if "%NEW_IP%"=="" (
     call :LOG "[ERROR] VPN Interface down. Waiting..."
-    :: If we lost the interface, we MUST rebind when it returns.
     set "FORCE_REBIND=1"
     timeout /t %RETRY% >nul & goto VPN_CHECK
 )
@@ -108,23 +118,24 @@ if exist "%LOCK_FILE%" (
     )
 )
 
-:: 2. 24H SLEDGEHAMMER CHECK
-if !D_UPTIME! GEQ %MAINTENANCE_LIMIT% (
-    call :LOG "[MAINTENANCE] Uptime !D_UPTIME!s exceeds limit. Initiating Sledgehammer..."
-    goto SLEDGEHAMMER
-)
-
-:: 3. DAEMON CHECK & ENFORCEMENT
+:: 2. DAEMON CHECK & ENFORCEMENT
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
 if errorlevel 1 (
     call :LOG "[WARNING] Daemon down. Flagging for forced binding..."
     set "FORCE_REBIND=1"
+    set "D_UPTIME=0"
 )
 
 if "!FORCE_REBIND!"=="1" (
     set "FORCE_REBIND=0"
     call :RESTART_DAEMON
     goto VPN_CHECK
+)
+
+:: 3. 24H SLEDGEHAMMER CHECK
+if !D_UPTIME! GEQ %MAINTENANCE_LIMIT% (
+    call :LOG "[MAINTENANCE] Uptime !D_UPTIME!s exceeds limit. Initiating Sledgehammer..."
+    goto SLEDGEHAMMER
 )
 
 :: 4. HEARTBEAT LOGGING
@@ -137,7 +148,11 @@ if !HB_TIMER! GEQ %H_INT% (
 
 :: 5. NETWORK INTEGRITY CHECKS
 set "NEW_IP="
-for /f "tokens=3" %%a in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /C:"IP Address"') do set "NEW_IP=%%a"
+for /f "tokens=* delims=" %%A in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /R "[0-9]\.[0-9]" ^| findstr /V "[/]"') do (
+    if "!NEW_IP!"=="" (
+        for %%B in (%%A) do set "NEW_IP=%%B"
+    )
+)
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "NEW_PORT=%%i"
 
 if not "!NEW_IP!"=="!OLD_IP!" (
@@ -155,16 +170,20 @@ if "!PORT_VALID!"=="1" (
     )
 )
 
-:: 6. WAIT & STOPWATCH
+:: 6. WAIT & ATOMIC STATE WRITE
 set /a W_SEC=0
 :WAIT_LOOP
 timeout /t 1 /nobreak >nul
 set /a W_SEC+=1
+:: Native Batch Addition
 set /a D_UPTIME+=1
 title 24h Timer: !D_UPTIME!/%MAINTENANCE_LIMIT%s ^| ID: %MYPID%
 if !W_SEC! LSS %CHECK_INT% goto WAIT_LOOP
 
-echo !D_UPTIME!> "%STATE_FILE%"
+:: v1.4 Atomic File Move (Prevents File-Lock Resets)
+echo !D_UPTIME!> "%STATE_FILE%.tmp"
+move /y "%STATE_FILE%.tmp" "%STATE_FILE%" >nul
+
 goto MONITOR_LOOP
 
 :: ============================================
@@ -181,8 +200,9 @@ timeout /t 20 >nul
 call :LOG "[MAINTENANCE] Reconnecting VPN..."
 "%PIA_CTL%" connect
 timeout /t 30 >nul
-set /a D_UPTIME=0
-echo 0 > "%STATE_FILE%"
+set "D_UPTIME=0"
+echo 0 > "%STATE_FILE%.tmp"
+move /y "%STATE_FILE%.tmp" "%STATE_FILE%" >nul
 set "FORCE_REBIND=1"
 goto VPN_CHECK
 
@@ -195,6 +215,10 @@ taskkill /F /IM deluged.exe >nul 2>&1
 start "" "%DEL_DIR%\deluged.exe" -c "%D_CONF%" -i %OLD_IP%
 timeout /t 8 >nul
 "%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %OLD_IP%; config -s listen_ports (%OLD_PORT%,%OLD_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
+:: Resync clock after daemon restart
+set "PS_UPTIME="
+for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
+if not "!PS_UPTIME!"=="" set "D_UPTIME=!PS_UPTIME!"
 goto :EOF
 
 :LOG
