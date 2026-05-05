@@ -45,6 +45,27 @@ set /a "HB_TIMER=0"
 set /a "MAINTENANCE_LIMIT=86400" 
 
 :: ============================================
+::    4.1 LOG ROTATION (Runs once per handoff)
+:: ============================================
+set "MAX_SIZE=52428800" :: 50MB in bytes
+if exist "%LOG_FILE%" (
+    for %%I in ("%LOG_FILE%") do (
+        if %%~zI GTR %MAX_SIZE% (
+            if exist "%LOG_FILE%.4" del /q "%LOG_FILE%.4"
+            if exist "%LOG_FILE%.3" move /y "%LOG_FILE%.3" "%LOG_FILE%.4" >nul
+            if exist "%LOG_FILE%.2" move /y "%LOG_FILE%.2" "%LOG_FILE%.3" >nul
+            if exist "%LOG_FILE%.1" move /y "%LOG_FILE%.1" "%LOG_FILE%.2" >nul
+            
+            :: Move active log to the first archive slot
+            move /y "%LOG_FILE%" "%LOG_FILE%.1" >nul
+            
+            :: Write the rotation notice to the TOP of the NEW log
+            echo [%DATE% %TIME%] [MAINTENANCE] Log rotated. Previous history moved to .1>> "%LOG_FILE%"
+        )
+    )
+)
+
+:: ============================================
 ::    4.5 PRIMARY USER SESSION CHECK
 :: ============================================
 :: Bulletproof check: Looks for explorer.exe owned by PRIMARY_USER regardless of domain
@@ -53,12 +74,12 @@ if %errorlevel% neq 0 (
     exit /b 0
 )
 
-call :LOG "[STARTUP] Watchdog v1.4 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.4.1 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
 set "D_UPTIME=0"
 
 :: ============================================
-::    4.6 THE "HANDOFF SYNC"
+::    4.6 THE "HANDOFF SYNC" (Runs Once)
 :: ============================================
 :: Syncs the Batch clock to the actual process time to prevent drift
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
@@ -175,7 +196,7 @@ set /a W_SEC=0
 :WAIT_LOOP
 timeout /t 1 /nobreak >nul
 set /a W_SEC+=1
-:: Native Batch Addition
+:: Native Batch Addition (Zero CPU Overhead)
 set /a D_UPTIME+=1
 title 24h Timer: !D_UPTIME!/%MAINTENANCE_LIMIT%s ^| ID: %MYPID%
 if !W_SEC! LSS %CHECK_INT% goto WAIT_LOOP
