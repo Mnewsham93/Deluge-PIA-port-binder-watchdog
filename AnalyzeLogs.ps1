@@ -1,12 +1,11 @@
 <#
 .SYNOPSIS
     Parses watchdog.log files to provide a health summary of the Deluge & PIA Watchdog.
+    v1.4.1 Update: Event Debouncing + Telemetry Data parsing + Universal Date Regex localization.
 #>
 
 $LogDir = "C:\ProgramData\deluge"
 $LogFiles = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending
-# Uses Environment Variable to remove hardcoded user paths
-$StateFile = "$env:APPDATA\deluge\watchdog_uptime.txt"
 
 if ($LogFiles.Count -eq 0) {
     Write-Host "No watchdog logs found in $LogDir." -ForegroundColor Red
@@ -15,32 +14,84 @@ if ($LogFiles.Count -eq 0) {
 }
 
 # --- Initialize Counters ---
-$VpnDrops = 0
-$NetworkUpdates = 0
-$SledgehammerCycles = 0
+$LifeVpnDrops = 0; $30dVpnDrops = 0
+$LifeNetworkUpdates = 0; $30dNetworkUpdates = 0
+$LifeSledgehammerCycles = 0; $30dSledgehammerCycles = 0
+$LifeRxMB = 0; $30dRxMB = 0
+$LifeTxMB = 0; $30dTxMB = 0
 $CurrentVPN = "Unknown"
+
+# Define Time Windows
+$ThirtyDaysAgo = (Get-Date).AddDays(-30)
+$LastDropTime = [datetime]::MinValue
 
 # --- Parse Logs ---
 Write-Host "Analyzing $($LogFiles.Count) log file(s)..." -ForegroundColor Cyan
 
-# Reverse the array to read from oldest to newest, ensuring the variables hold the latest data
+# Reverse the array to read from oldest to newest
 [array]::Reverse($LogFiles)
 
 foreach ($File in $LogFiles) {
     $Lines = Get-Content $File.FullName
     foreach ($Line in $Lines) {
-        if ($Line -match "\[ERROR\] VPN Interface down") { $VpnDrops++ }
-        if ($Line -match "\[UPDATE\]") { $NetworkUpdates++ }
-        if ($Line -match "\[MAINTENANCE\] Disconnecting VPN") { $SledgehammerCycles++ }
-        # Capture the combined IP and Port from the init or config lines
+        
+        # Main parsing gate
+        if ($Line -match "\[ERROR\] VPN Interface down" -or $Line -match "\[UPDATE\]" -or $Line -match "\[MAINTENANCE\] Disconnecting VPN" -or $Line -match "\[STATS\]") {
+            
+            $IsRecent = $false
+            $EventTime = [datetime]::MinValue
+
+            # Universal Date Regex: Ignores localized day abbreviations and accepts slashes, dashes, or dots
+            if ($Line -match "^\[.*?\s+(\d{2,4}[-/\.]\d{2}[-/\.]\d{2,4}\s+\d{1,2}:\d{2}:\d{2})") {
+                try {
+                    $EventTime = [datetime]$matches[1]
+                    if ($EventTime -ge $ThirtyDaysAgo) { $IsRecent = $true }
+                } catch {}
+            }
+
+            # 1. EVENT DEBOUNCING: The VPN Drop Cluster Logic
+            if ($Line -match "\[ERROR\] VPN Interface down") {
+                if ($EventTime -gt $LastDropTime.AddMinutes(5)) {
+                    $LifeVpnDrops++
+                    if ($IsRecent) { $30dVpnDrops++ }
+                }
+                $LastDropTime = $EventTime 
+            }
+
+            # 2. Standard Tallying for isolated events
+            if ($Line -match "\[UPDATE\]") {
+                $LifeNetworkUpdates++
+                if ($IsRecent) { $30dNetworkUpdates++ }
+            }
+            if ($Line -match "\[MAINTENANCE\] Disconnecting VPN") {
+                $LifeSledgehammerCycles++
+                if ($IsRecent) { $30dSledgehammerCycles++ }
+            }
+            
+            # 3. Telemetry Parsing
+            if ($Line -match "\[STATS\] Delta -> RX: ([\d\.]+) MB \| TX: ([\d\.]+) MB") {
+                try {
+                    $rx = [double]$matches[1]
+                    $tx = [double]$matches[2]
+                    $LifeRxMB += $rx
+                    $LifeTxMB += $tx
+                    if ($IsRecent) {
+                        $30dRxMB += $rx
+                        $30dTxMB += $tx
+                    }
+                } catch {}
+            }
+        }
+        
+        # IP Extraction
         if ($Line -match "Monitoring: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
-        elseif ($Line -match "Enforcing Full Bind: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
+        elseif ($Line -match "clean bind to: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
     }
 }
 
-# Re-fetch the newest log specifically to grab the last 5 entries
+# Re-fetch the newest log for the Last 10 display
 $NewestLog = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$Last5Lines = Get-Content $NewestLog.FullName | Where-Object { $_.Trim() -ne "" } | Select-Object -Last 5
+$Last10Lines = Get-Content $NewestLog.FullName | Where-Object { $_.Trim() -ne "" } | Select-Object -Last 10
 
 # --- Calculate Uptime & Next Cycle ---
 $DaemonProcess = Get-Process -Name "deluged" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -49,32 +100,21 @@ if ($DaemonProcess) {
     $DaemonStatus = "RUNNING"
     $StatusColor = "Green"
     
-    if (Test-Path $StateFile) {
-        try {
-            $Raw = (Get-Content $StateFile) -join ""
-            $Clean = $Raw -replace '\D',''
-            if ($Clean -eq "") { $Clean = "0" }
-            
-            $UptimeSeconds = [int]$Clean
-            
-            $UptimeSpan = [timespan]::fromseconds($UptimeSeconds)
-            $TotalHours = [int][math]::Floor($UptimeSpan.TotalHours)
-            $UptimeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalHours, $UptimeSpan.Minutes, $UptimeSpan.Seconds
-            
-            $SecondsToSledgehammer = 86400 - $UptimeSeconds
-            if ($SecondsToSledgehammer -lt 0) { $SecondsToSledgehammer = 0 }
-            
-            $SledgeSpan = [timespan]::fromseconds($SecondsToSledgehammer)
-            $TotalSledgeHours = [int][math]::Floor($SledgeSpan.TotalHours)
-            $SledgeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalSledgeHours, $SledgeSpan.Minutes, $SledgeSpan.Seconds
-        } catch {
-            $UptimeString = "[Formatting Error - Check Console]"
-            $SledgeString = "[Formatting Error - Check Console]"
-            $StatusColor = "Yellow"
-        }
-    } else {
-        $UptimeString = "[Waiting for State File]"
-        $SledgeString = "[Waiting for State File]"
+    try {
+        $UptimeSeconds = [math]::Truncate((New-TimeSpan -Start $DaemonProcess.StartTime).TotalSeconds)
+        $UptimeSpan = [timespan]::fromseconds($UptimeSeconds)
+        $TotalHours = [int][math]::Floor($UptimeSpan.TotalHours)
+        $UptimeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalHours, $UptimeSpan.Minutes, $UptimeSpan.Seconds
+        
+        $SecondsToSledgehammer = 86400 - $UptimeSeconds
+        if ($SecondsToSledgehammer -lt 0) { $SecondsToSledgehammer = 0 }
+        
+        $SledgeSpan = [timespan]::fromseconds($SecondsToSledgehammer)
+        $TotalSledgeHours = [int][math]::Floor($SledgeSpan.TotalHours)
+        $SledgeString = "{0:D2}h {1:D2}m {2:D2}s" -f $TotalSledgeHours, $SledgeSpan.Minutes, $SledgeSpan.Seconds
+    } catch {
+        $UptimeString = "[Calculation Error]"
+        $SledgeString = "[Calculation Error]"
         $StatusColor = "Yellow"
     }
 } else {
@@ -84,10 +124,16 @@ if ($DaemonProcess) {
     $StatusColor = "Red"
 }
 
+# --- Format Data Strings (Convert MB to GB) ---
+$30dRxDisp = "$([math]::Round($30dRxMB / 1024, 2)) GB"
+$LifeRxDisp = "$([math]::Round($LifeRxMB / 1024, 2)) GB"
+$30dTxDisp = "$([math]::Round($30dTxMB / 1024, 2)) GB"
+$LifeTxDisp = "$([math]::Round($LifeTxMB / 1024, 2)) GB"
+
 # --- Output Dashboard ---
 Clear-Host
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  DELUGE WATCHDOG v1.4 HEALTH DASHBOARD   " -ForegroundColor Cyan
+Write-Host "  DELUGE WATCHDOG v1.4.1 HEALTH DASHBOARD " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
@@ -95,14 +141,17 @@ Write-Host "Current VPN IP:    $CurrentVPN"
 Write-Host "Daemon Uptime:     $UptimeString"
 Write-Host "Next Sledgehammer: $SledgeString"
 Write-Host ""
-Write-Host "--- 30-Day Activity History ---" -ForegroundColor Yellow
-Write-Host "VPN Drops Detected:    $VpnDrops"
-Write-Host "Network Updates:       $NetworkUpdates"
-Write-Host "24h Sledgehammers:     $SledgehammerCycles"
+Write-Host "--- Activity Metrics ---" -ForegroundColor Yellow
+Write-Host "                       [30-Day]    [Lifetime]" -ForegroundColor DarkGray
+Write-Host "VPN Drops Detected:    $("$30dVpnDrops".PadRight(12))$LifeVpnDrops"
+Write-Host "Network Updates:       $("$30dNetworkUpdates".PadRight(12))$LifeNetworkUpdates"
+Write-Host "24h Sledgehammers:     $("$30dSledgehammerCycles".PadRight(12))$LifeSledgehammerCycles"
+Write-Host "Data Downloaded:       $($30dRxDisp.PadRight(12))$LifeRxDisp"
+Write-Host "Data Uploaded:         $($30dTxDisp.PadRight(12))$LifeTxDisp"
 Write-Host ""
-Write-Host "--- Last 5 Watchdog Events ---" -ForegroundColor Yellow
-if ($Last5Lines) {
-    foreach ($line in $Last5Lines) {
+Write-Host "--- Last 10 Watchdog Events ---" -ForegroundColor Yellow
+if ($Last10Lines) {
+    foreach ($line in $Last10Lines) {
         Write-Host $line -ForegroundColor Gray
     }
 } else {
