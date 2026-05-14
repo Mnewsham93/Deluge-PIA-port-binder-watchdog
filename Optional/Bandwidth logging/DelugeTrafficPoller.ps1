@@ -1,15 +1,26 @@
 <#
 .SYNOPSIS
     Standalone Traffic Poller for wgpia0.
-    Calculates delta traffic to survive VPN adapter resets.
-    Designed as a decoupled "Sidecar" to the Deluge Watchdog.
+    v1.5.0 Update: Inherits configuration directly from deluge_watchdog.bat
 #>
 
 $AdapterName = "wgpia0"
-$LogFile = "C:\ProgramData\deluge\watchdog.log"
-$StateFile = "C:\ProgramData\deluge\traffic_state.json"
 
-# --- 1. Get Current Stats from Windows ---
+# --- 1. Smart Config Inheritance ---
+$LogDir = "C:\ProgramData\deluge" # Fallback Default
+$BatPath = Join-Path $PSScriptRoot "deluge_watchdog.bat"
+
+if (Test-Path $BatPath) {
+    $BatLine = Get-Content $BatPath | Where-Object { $_ -match '^set "LOG_DIR=(.*?)"' } | Select-Object -First 1
+    if ($BatLine -match '^set "LOG_DIR=(.*?)"') {
+        $LogDir = $matches[1]
+    }
+}
+
+$LogFile = Join-Path $LogDir "watchdog.log"
+$StateFile = Join-Path $LogDir "traffic_state.json"
+
+# --- 2. Get Current Stats from Windows ---
 $Stats = Get-NetAdapterStatistics -Name $AdapterName -ErrorAction SilentlyContinue
 
 if (-not $Stats) {
@@ -20,22 +31,28 @@ if (-not $Stats) {
 $CurrentRx = $Stats.ReceivedBytes
 $CurrentTx = $Stats.SentBytes
 
-# --- 2. Load Previous State ---
+# --- 3. Load Previous State ---
 $LastRx = 0; $LastTx = 0
 if (Test-Path $StateFile) {
     try {
         $State = Get-Content $StateFile | ConvertFrom-Json
         $LastRx = $State.LastRx
         $LastTx = $State.LastTx
-    } catch {}
+    } catch {
+        # Catch JSON corruption and log it to the main watchdog log
+        $Now = Get-Date
+        $Timestamp = "[{0} {1}]" -f $Now.ToString("ddd MM/dd/yyyy"), $Now.ToString("H:mm:ss.ff").PadLeft(11, ' ')
+        $ErrLine = "$Timestamp [ID:SIDECAR] [WARNING] Failed to read traffic state: $($_.Exception.Message)"
+        Add-Content -Path $LogFile -Value $ErrLine -ErrorAction SilentlyContinue
+    }
 }
 
-# --- 3. Calculate Delta ---
+# --- 4. Calculate Delta ---
 # If Current is less than Last, the adapter was reset. Current is the total since reset.
 if ($CurrentRx -lt $LastRx) { $DeltaRx = $CurrentRx } else { $DeltaRx = $CurrentRx - $LastRx }
 if ($CurrentTx -lt $LastTx) { $DeltaTx = $CurrentTx } else { $DeltaTx = $CurrentTx - $LastTx }
 
-# --- 4. Format and Log (Only if data actually moved) ---
+# --- 5. Format and Log (Only if data actually moved) ---
 if ($DeltaRx -gt 0 -or $DeltaTx -gt 0) {
     $MbRx = [math]::Round($DeltaRx / 1MB, 2)
     $MbTx = [math]::Round($DeltaTx / 1MB, 2)
@@ -72,8 +89,14 @@ if ($DeltaRx -gt 0 -or $DeltaTx -gt 0) {
     }
 }
 
-# --- 5. Save Current State for Next Run ---
+# --- 6. Save Current State for Next Run ---
 try {
     $NewState = @{ LastRx = $CurrentRx; LastTx = $CurrentTx }
-    $NewState | ConvertTo-Json | Set-Content -Path $StateFile -ErrorAction SilentlyContinue
-} catch {}
+    $NewState | ConvertTo-Json | Set-Content -Path $StateFile -ErrorAction Stop
+} catch {
+    # Catch write-permission failures
+    $Now = Get-Date
+    $Timestamp = "[{0} {1}]" -f $Now.ToString("ddd MM/dd/yyyy"), $Now.ToString("H:mm:ss.ff").PadLeft(11, ' ')
+    $ErrLine = "$Timestamp [ID:SIDECAR] [WARNING] Failed to save traffic state: $($_.Exception.Message)"
+    Add-Content -Path $LogFile -Value $ErrLine -ErrorAction SilentlyContinue
+}
