@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Standalone Traffic Poller for wgpia0.
-    v1.5.0 Update: Inherits configuration directly from deluge_watchdog.bat
+    v1.5.1 Update: Adds the Atomic Write logic from deluge_watchdog.bat to prevent edgecase file corruption.
 #>
 
 $AdapterName = "wgpia0"
@@ -92,9 +92,15 @@ if ($DeltaRx -gt 0 -or $DeltaTx -gt 0) {
 # --- 6. Save Current State for Next Run ---
 try {
     $NewState = @{ LastRx = $CurrentRx; LastTx = $CurrentTx }
-    $NewState | ConvertTo-Json | Set-Content -Path $StateFile -ErrorAction Stop
+    $TempStateFile = "$StateFile.tmp"
+    
+    # Write to a temporary file first
+    $NewState | ConvertTo-Json | Set-Content -Path $TempStateFile -ErrorAction Stop
+    
+    # Perform an atomic move to overwrite the actual state file (the PS equivalent of move /y)
+    Move-Item -Path $TempStateFile -Destination $StateFile -Force -ErrorAction Stop
 } catch {
-    # Catch write-permission failures
+    # Catch write-permission or locked-file failures
     $Now = Get-Date
     $Timestamp = "[{0} {1}]" -f $Now.ToString("ddd MM/dd/yyyy"), $Now.ToString("H:mm:ss.ff").PadLeft(11, ' ')
     $ErrLine = "$Timestamp [ID:SIDECAR] [WARNING] Failed to save traffic state: $($_.Exception.Message)"
