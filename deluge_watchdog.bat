@@ -66,7 +66,7 @@ if exist "%LOG_FILE%" (
 )
 
 :: ============================================
-::    4.5 PRIMARY USER SESSION CHECK
+::    4.2 PRIMARY USER SESSION CHECK
 :: ============================================
 :: Bulletproof check: Looks for explorer.exe owned by PRIMARY_USER regardless of domain
 tasklist /V /FI "IMAGENAME eq explorer.exe" 2>nul | find /I "%PRIMARY_USER%" >nul
@@ -74,12 +74,12 @@ if %errorlevel% neq 0 (
     exit /b 0
 )
 
-call :LOG "[STARTUP] Watchdog v1.4.1 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.5.0 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
 set "D_UPTIME=0"
 
 :: ============================================
-::    4.6 THE "HANDOFF SYNC" (Runs Once)
+::    4.3 THE "HANDOFF SYNC" (Runs Once)
 :: ============================================
 :: Syncs the Batch clock to the actual process time to prevent drift
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
