@@ -1,4 +1,4 @@
-# Deluge & PIA Port Binder Watchdog (v1.4.1)
+# Deluge & PIA Port Binder Watchdog (v1.5.0)
 
 A high-resilience Windows automation utility designed to manage the Deluge daemon and Private Internet Access (PIA) VPN. Built as a "batch-metal" alternative to Dockerized solutions (such as Gluetun), this watchdog avoids WSL2 virtualization overhead and container "stale socket" failures by running natively on the host system. It ensures that your traffic is strictly bound to the active VPN interface and forwarded port, providing an autonomous, self-healing killswitch for long-term deployments.
 
@@ -20,7 +20,7 @@ While Gluetun is excellent for Linux, running a VPN-torrent stack in Docker on W
 * **Universal Parsing Engine:** Employs a localization-proof, double-filter regex algorithm to extract the VPN IP. Bypasses language-specific `netsh` variations and ignores WireGuard subnet prefixes.
 * **Headless Storm Protection:** Actively polls for the primary user's desktop session (`explorer.exe`). Prevents runaway Task Scheduler instances and cascading log errors when the PC reboots and stalls at the Windows login screen.
 * **Atomic State & Log Management:** Utilizes transactional file operations (`move /y`) to prevent race conditions during Task Scheduler handoffs, and natively rotates logs in a 50MB rolling-five buffer to prevent filesystem bloat.
-* **Debounced Health Dashboard:** The included PowerShell Log Analyzer uses event-debouncing to group clustered 15-second outage ticks into single network incidents for accurate 30-Day and Lifetime telemetry.
+* **Dynamic Telemetry & Dashboard:** Decoupled PowerShell analytics dynamically inherit configurations from the core `.bat` file (Single Source of Truth), providing debounced incident tracking and self-reporting diagnostics without hardcoded paths.
 
 ---
 
@@ -60,12 +60,14 @@ By querying the Windows NDIS network stack instead of the Deluge RPC port, this 
 ### Troubleshooting
 * **Physical Drops:** If your physical internet goes out, the script will enter a silent error loop. Once the internet returns, it automatically detects the new VPN IP/Port and forcefully restarts the daemon.
 * **System Reboots:** The watchdog will peacefully sleep at the login screen. It will only begin attempting to sync and start the VPN/Daemon once the `PRIMARY_USER` physically logs into the desktop session.
+* **System Diagnostics:** If file-system permissions fail or unexpected math errors occur, the Dashboard will output live diagnostic warnings at the bottom of the console rather than failing silently.
 
 ---
 
 ### Version History
 
-* **v1.4.1 (The Modularity Update):** Implemented incident debouncing in Log Analyzer to group VPN drops accurately. Added optional decoupled `DelugeTrafficPoller.ps1` sidecar for bandwidth tracking. Added atomic 50MB log rotation to core script.
+* **v1.5.0:** Implemented dynamic configuration inheritance (PowerShell scripts now read paths directly from the Batch SSoT). Added self-reporting telemetry to the Sidecar and Dashboard to capture and display file-system/math errors without silent failures. Finalized documentation naming consistencies.
+* **v1.4.1:** Implemented incident debouncing in Log Analyzer to group VPN drops accurately. Added optional decoupled `DelugeTrafficPoller.ps1` sidecar for bandwidth tracking. Added atomic 50MB log rotation to core script.
 * **v1.4.0:** Implemented Atomic OS Uptime sync; Universal Regex IP extraction; Atomic State Writes; Bulletproof User Domain checks.
 * **v1.3.1:** Updated `AnalyzeLogs.ps1` with portable environment variables to remove hardcoded user paths; Added native vs. virtualized performance documentation.
 * **v1.3.0:** Added Headless Storm Protection via `explorer.exe` session gate; relocated instance handoff logic.
