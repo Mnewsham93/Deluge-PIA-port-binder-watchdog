@@ -1,10 +1,20 @@
 <#
 .SYNOPSIS
     Parses watchdog.log files to provide a health summary of the Deluge & PIA Watchdog.
-    v1.4.1 Update: Event Debouncing + Telemetry Data parsing + Universal Date Regex localization.
+    v1.5.0 Update: Inherits configuration directly from deluge_watchdog.bat
 #>
 
-$LogDir = "C:\ProgramData\deluge"
+# --- Smart Config Inheritance ---
+$LogDir = "C:\ProgramData\deluge" # Fallback Default
+$BatPath = Join-Path $PSScriptRoot "deluge_watchdog.bat"
+
+if (Test-Path $BatPath) {
+    $BatLine = Get-Content $BatPath | Where-Object { $_ -match '^set "LOG_DIR=(.*?)"' } | Select-Object -First 1
+    if ($BatLine -match '^set "LOG_DIR=(.*?)"') {
+        $LogDir = $matches[1]
+    }
+}
+
 $LogFiles = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending
 
 if ($LogFiles.Count -eq 0) {
@@ -21,27 +31,27 @@ $LifeRxMB = 0; $30dRxMB = 0
 $LifeTxMB = 0; $30dTxMB = 0
 $CurrentVPN = "Unknown"
 
-# Define Time Windows
+# --- Define Time Windows ---
 $ThirtyDaysAgo = (Get-Date).AddDays(-30)
 $LastDropTime = [datetime]::MinValue
 
 # --- Parse Logs ---
 Write-Host "Analyzing $($LogFiles.Count) log file(s)..." -ForegroundColor Cyan
 
-# Reverse the array to read from oldest to newest
+# --- Reverse the array to read from oldest to newest ---
 [array]::Reverse($LogFiles)
 
 foreach ($File in $LogFiles) {
     $Lines = Get-Content $File.FullName
     foreach ($Line in $Lines) {
         
-        # Main parsing gate
+        # --- Main parsing gate ---
         if ($Line -match "\[ERROR\] VPN Interface down" -or $Line -match "\[UPDATE\]" -or $Line -match "\[MAINTENANCE\] Disconnecting VPN" -or $Line -match "\[STATS\]") {
             
             $IsRecent = $false
             $EventTime = [datetime]::MinValue
 
-            # Universal Date Regex: Ignores localized day abbreviations and accepts slashes, dashes, or dots
+            # --- Universal Date Regex: Ignores localized day abbreviations and accepts slashes, dashes, or dots ---
             if ($Line -match "^\[.*?\s+(\d{2,4}[-/\.]\d{2}[-/\.]\d{2,4}\s+\d{1,2}:\d{2}:\d{2})") {
                 try {
                     $EventTime = [datetime]$matches[1]
@@ -49,7 +59,7 @@ foreach ($File in $LogFiles) {
                 } catch {}
             }
 
-            # 1. EVENT DEBOUNCING: The VPN Drop Cluster Logic
+            # --- EVENT DEBOUNCING: The VPN Drop Cluster Logic ---
             if ($Line -match "\[ERROR\] VPN Interface down") {
                 if ($EventTime -gt $LastDropTime.AddMinutes(5)) {
                     $LifeVpnDrops++
@@ -58,7 +68,7 @@ foreach ($File in $LogFiles) {
                 $LastDropTime = $EventTime 
             }
 
-            # 2. Standard Tallying for isolated events
+            # --- Standard Tallying for isolated events ---
             if ($Line -match "\[UPDATE\]") {
                 $LifeNetworkUpdates++
                 if ($IsRecent) { $30dNetworkUpdates++ }
@@ -68,7 +78,7 @@ foreach ($File in $LogFiles) {
                 if ($IsRecent) { $30dSledgehammerCycles++ }
             }
             
-            # 3. Telemetry Parsing
+            # --- Telemetry Parsing ---
             if ($Line -match "\[STATS\] Delta -> RX: ([\d\.]+) MB \| TX: ([\d\.]+) MB") {
                 try {
                     $rx = [double]$matches[1]
@@ -83,13 +93,13 @@ foreach ($File in $LogFiles) {
             }
         }
         
-        # IP Extraction
+        # --- IP Extraction ---
         if ($Line -match "Monitoring: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
         elseif ($Line -match "clean bind to: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
     }
 }
 
-# Re-fetch the newest log for the Last 10 display
+# --- Re-fetch the newest log for the Last 10 display ---
 $NewestLog = Get-ChildItem -Path $LogDir -Filter "watchdog.log*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $Last10Lines = Get-Content $NewestLog.FullName | Where-Object { $_.Trim() -ne "" } | Select-Object -Last 10
 
@@ -115,7 +125,9 @@ if ($DaemonProcess) {
     } catch {
         $UptimeString = "[Calculation Error]"
         $SledgeString = "[Calculation Error]"
-        $StatusColor = "Yellow"
+        $DaemonStatus = "OFFLINE"
+        $StatusColor = "Red"
+        $LiveError = "Math/TimeSync Error: $($_.Exception.Message)"
     }
 } else {
     $UptimeString = "N/A"
@@ -133,7 +145,7 @@ $LifeTxDisp = "$([math]::Round($LifeTxMB / 1024, 2)) GB"
 # --- Output Dashboard ---
 Clear-Host
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  DELUGE WATCHDOG v1.4.1 HEALTH DASHBOARD " -ForegroundColor Cyan
+Write-Host "  DELUGE WATCHDOG v1.5.0 HEALTH DASHBOARD " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
@@ -158,6 +170,14 @@ if ($Last10Lines) {
     Write-Host "No recent events found." -ForegroundColor DarkGray
 }
 Write-Host ""
+
+# NEW: --- Display live UI errors if they occurred ---
+if ($LiveError) {
+    Write-Host "--- System Diagnostics ---" -ForegroundColor Red
+    Write-Host "[!] $LiveError" -ForegroundColor Red
+    Write-Host ""
+}
+
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
