@@ -47,7 +47,8 @@ set /a "MAINTENANCE_LIMIT=86400"
 :: ============================================
 ::    4.1 LOG ROTATION (Runs once per handoff)
 :: ============================================
-set "MAX_SIZE=52428800" :: 50MB in bytes
+:: 50MB in bytes
+set "MAX_SIZE=52428800"
 if exist "%LOG_FILE%" (
     for %%I in ("%LOG_FILE%") do (
         if %%~zI GTR %MAX_SIZE% (
