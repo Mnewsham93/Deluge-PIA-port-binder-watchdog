@@ -75,7 +75,7 @@ if %errorlevel% neq 0 (
     exit /b 0
 )
 
-call :LOG "[STARTUP] Watchdog v1.5.0 active (ID: %MYPID%)"
+call :LOG "[STARTUP] Watchdog v1.5.1 active (ID: %MYPID%)"
 set "FORCE_REBIND=0"
 set "D_UPTIME=0"
 
