@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Parses watchdog.log files to provide a health summary of the Deluge & PIA Watchdog.
-    v1.5.1 Update: Reduces the number of times the log file is read by the script. 
+    v1.5.1 Update: Dynamically calculates and displays the active lifespan of the current VPN IP lease, and reduces the total number of times the log file is read. 
 #>
 
 # --- 1. Smart Config Inheritance ---
@@ -93,7 +93,7 @@ foreach ($File in $LogFiles) {
             }
         }
         
-     # --- End of main parse loop ---
+        # --- End of main parse loop ---
         # IP Extraction
         if ($Line -match "Monitoring: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
         elseif ($Line -match "clean bind to: ([\d\.]+):(\d+)") { $CurrentVPN = "$($matches[1]):$($matches[2])" }
@@ -103,6 +103,48 @@ foreach ($File in $LogFiles) {
 # $Lines naturally retains the contents of the newest log from the final loop iteration.
 # We can filter it directly from memory without hitting the disk again.
 $Last10Lines = $Lines | Where-Object { $_.Trim() -ne "" } | Select-Object -Last 10
+
+# --- Calculate True IP Lease Age ---
+$VpnDurationString = "N/A"
+if ($CurrentVPN -and $CurrentVPN -ne "Unknown") {
+    $RawIpToFind = $CurrentVPN.Split(':')[0]
+    
+    # Default our historical boundary index to the very first line of the log file
+    $BoundaryIndex = 0
+
+    # Scan backward from the end of the log array
+    for ($i = $Lines.Count - 1; $i -ge 0; $i--) {
+        # Check if the line explicitly defines a binding or status checkpoint for a DIFFERENT IP address
+        if ($Lines[$i] -match "(?:Monitoring|bind to|Bound to):\s*([\d\.]+)") {
+            $FoundIp = $matches[1]
+            if ($FoundIp -ne $RawIpToFind) {
+                # We have found the absolute newest log line associated with an OLD IP address.
+                # Therefore, the lease age boundary is the line immediately following this one (+1).
+                $BoundaryIndex = $i + 1
+                if ($BoundaryIndex -ge $Lines.Count) { $BoundaryIndex = $Lines.Count - 1 }
+                break
+            }
+        }
+    }
+
+    # Extract the timestamp from the derived historical boundary line
+    $BoundaryLine = $Lines[$BoundaryIndex]
+    if ($BoundaryLine -match "^\[([A-Za-z]{3}\s+\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\.\d{2})\]") {
+        $LogTimeStampRaw = $matches[1]
+        $NormalizedStamp = $LogTimeStampRaw -replace '\s+', ' '
+        
+        try {
+            $FirstSeenDate = [datetime]::ParseExact($NormalizedStamp, "ddd MM/dd/yyyy H:mm:ss.ff", $null)
+            $TimeSpan = (Get-Date) - $FirstSeenDate
+            
+            if ($TimeSpan.TotalDays -ge 1) {
+                $VpnDurationString = "{0}d {1}h {2}m" -f [math]::Floor($TimeSpan.TotalDays), $TimeSpan.Hours, $TimeSpan.Minutes
+            } else {
+                $VpnDurationString = "{0}h {1}m" -f $TimeSpan.Hours, $TimeSpan.Minutes
+            }
+        } catch {}
+    }
+}
 
 # --- Calculate Uptime & Next Cycle ---
 $DaemonProcess = Get-Process -Name "deluged" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -151,6 +193,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Daemon Status:     " -NoNewline; Write-Host $DaemonStatus -ForegroundColor $StatusColor
 Write-Host "Current VPN IP:    $CurrentVPN"
+Write-Host "IP Lease Age:      $VpnDurationString"
 Write-Host "Daemon Uptime:     $UptimeString"
 Write-Host "Next Sledgehammer: $SledgeString"
 Write-Host ""
