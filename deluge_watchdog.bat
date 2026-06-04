@@ -37,7 +37,6 @@ set "D_PID=%D_CONF%\deluged.pid"
 set "D_USER=localclient"
 set "D_PASS=your_deluge_password"
 set "D_PORT=58846"
-set "STATE_FILE=%D_CONF%\watchdog_uptime.txt"
 
 :: TIMING CONFIG
 set /a "CHECK_INT=5", "RETRY=15", "H_INT=60"
@@ -86,7 +85,7 @@ set "D_UPTIME=0"
 tasklist /FI "IMAGENAME eq deluged.exe" 2>nul | find /I "deluged.exe" >nul
 if not errorlevel 1 (
     set "PS_UPTIME="
-    for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
+    for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged ^| Select-Object -First 1).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
     if not "!PS_UPTIME!"=="" set "D_UPTIME=!PS_UPTIME!"
 )
 
@@ -102,12 +101,7 @@ if exist "%LOCK_FILE%" (
 )
 
 :: v1.4 UNIVERSAL REGEX (Parser-Safe & Latch-Protected)
-set "NEW_IP="
-for /f "tokens=* delims=" %%A in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /R "[0-9]\.[0-9]" ^| findstr /V "[/]"') do (
-    if "!NEW_IP!"=="" (
-        for %%B in (%%A) do set "NEW_IP=%%B"
-    )
-)
+call :GET_VPN_IP
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "RAW_PORT=%%i"
 
 if "%NEW_IP%"=="" (
@@ -169,12 +163,7 @@ if !HB_TIMER! GEQ %H_INT% (
 )
 
 :: 5. NETWORK INTEGRITY CHECKS
-set "NEW_IP="
-for /f "tokens=* delims=" %%A in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /R "[0-9]\.[0-9]" ^| findstr /V "[/]"') do (
-    if "!NEW_IP!"=="" (
-        for %%B in (%%A) do set "NEW_IP=%%B"
-    )
-)
+call :GET_VPN_IP
 for /f "tokens=*" %%i in ('"%PIA_CTL%" get portforward 2^>nul') do set "NEW_PORT=%%i"
 
 if not "!NEW_IP!"=="!OLD_IP!" (
@@ -192,7 +181,7 @@ if "!PORT_VALID!"=="1" (
     )
 )
 
-:: 6. WAIT & ATOMIC STATE WRITE
+:: 6. WAIT LOOP
 set /a W_SEC=0
 :WAIT_LOOP
 timeout /t 1 /nobreak >nul
@@ -201,10 +190,6 @@ set /a W_SEC+=1
 set /a D_UPTIME+=1
 title 24h Timer: !D_UPTIME!/%MAINTENANCE_LIMIT%s ^| ID: %MYPID%
 if !W_SEC! LSS %CHECK_INT% goto WAIT_LOOP
-
-:: v1.4 Atomic File Move (Prevents File-Lock Resets)
-echo !D_UPTIME!> "%STATE_FILE%.tmp"
-move /y "%STATE_FILE%.tmp" "%STATE_FILE%" >nul
 
 goto MONITOR_LOOP
 
@@ -223,8 +208,6 @@ call :LOG "[MAINTENANCE] Reconnecting VPN..."
 "%PIA_CTL%" connect
 timeout /t 30 >nul
 set "D_UPTIME=0"
-echo 0 > "%STATE_FILE%.tmp"
-move /y "%STATE_FILE%.tmp" "%STATE_FILE%" >nul
 set "FORCE_REBIND=1"
 goto VPN_CHECK
 
@@ -239,7 +222,7 @@ timeout /t 8 >nul
 "%DEL_DIR%\deluge-console.exe" --config "%D_CONF%" "connect 127.0.0.1:%D_PORT% %D_USER% %D_PASS%; config -s outgoing_interface %OLD_IP%; config -s listen_ports (%OLD_PORT%,%OLD_PORT%); config -s upnp False; config -s natpmp False; quit" >nul 2>&1
 :: Resync clock after daemon restart
 set "PS_UPTIME="
-for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
+for /f "delims=" %%T in ('powershell "[math]::Truncate((New-TimeSpan -Start (Get-Process deluged ^| Select-Object -First 1).StartTime).TotalSeconds)" 2^>nul') do set "PS_UPTIME=%%T"
 if not "!PS_UPTIME!"=="" set "D_UPTIME=!PS_UPTIME!"
 goto :EOF
 
@@ -255,5 +238,15 @@ if not defined V_PORT goto :EOF
 echo !V_PORT!| findstr /r "^[0-9][0-9]*$" >nul
 if not errorlevel 1 (
     if !V_PORT! GEQ 1024 if !V_PORT! LEQ 65535 set "PORT_VALID=1"
+)
+goto :EOF
+
+:GET_VPN_IP
+:: v1.4 Universal Regex (Parser-Safe & Latch-Protected). Sets NEW_IP for the caller.
+set "NEW_IP="
+for /f "tokens=* delims=" %%A in ('netsh interface ipv4 show addresses "%ADAPTER%" 2^>nul ^| findstr /R "[0-9]\.[0-9]" ^| findstr /V "[/]"') do (
+    if "!NEW_IP!"=="" (
+        for %%B in (%%A) do set "NEW_IP=%%B"
+    )
 )
 goto :EOF
