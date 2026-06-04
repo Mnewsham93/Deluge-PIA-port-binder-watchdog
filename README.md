@@ -1,4 +1,4 @@
-# Deluge & PIA Port Binder Watchdog (v1.5.0)
+# Deluge & PIA Port Binder Watchdog (v1.5.1)
 
 A high-resilience Windows automation utility designed to manage the Deluge daemon and Private Internet Access (PIA) VPN. Built as a "batch-metal" alternative to Dockerized solutions (such as Gluetun), this watchdog avoids WSL2 virtualization overhead and container "stale socket" failures by running natively on the host system. It ensures that your traffic is strictly bound to the active VPN interface and forwarded port, providing an autonomous, self-healing killswitch for long-term deployments.
 
@@ -30,8 +30,10 @@ While Gluetun is excellent for Linux, running a VPN-torrent stack in Docker on W
 Open `deluge_watchdog.bat` and update the `:: 4. CONFIG` section with your specific environment variables:
 * `PRIMARY_USER`: Your Windows login name (e.g., `Username`).
 * `REAL_USER_PATH`: Your Windows user directory (e.g., `C:\Users\Username`).
-* `D_PASS`: Your Deluge `localclient` daemon password.
+* `DEL_DIR`: Path to your Deluge install directory (default `C:\Program Files\Deluge`).
 * `PIA_CTL`: Path to your `piactl.exe` (usually in `C:\Program Files\Private Internet Access\`).
+* `ADAPTER`: Your PIA WireGuard adapter name (default `wgpia0`; only change this if you are not on the default WireGuard tunnel).
+* `D_PASS`: Your Deluge `localclient` daemon password.
 
 #### 2. Core Automation (Task Scheduler)
 To ensure 24/7 coverage, configure a Windows Task for the core watchdog:
@@ -45,10 +47,10 @@ To ensure 24/7 coverage, configure a Windows Task for the core watchdog:
 ### 📊 Optional: Lifetime Traffic Tracking (Sidecar)
 For users who want to track their total data movement (RX/TX) directly on the Health Dashboard, we provide a decoupled `DelugeTrafficPoller.ps1` sidecar. 
 
-By querying the Windows NDIS network stack instead of the Deluge RPC port, this script tracks bandwidth safely without risking a killswitch hang if the daemon freezes. It automatically calculates deltas to survive VPN adapter resets.
+By querying the Windows NDIS network stack instead of the Deluge RPC port, this script tracks bandwidth safely without risking a killswitch hang if the daemon freezes. It automatically calculates deltas to survive VPN adapter resets, and (as of v1.5.1) writes its state cache transactionally to prevent corruption mid-reset.
 
 **Installation:**
-1. Copy `/Optional/Telemetry/DelugeTrafficPoller.ps1` to your Deluge `ProgramData` folder (or leave in current directory).
+1. Locate `DelugeTrafficPoller.ps1` in `/Optional/Bandwidth logging/`. The script inherits `LOG_DIR` from `deluge_watchdog.bat` when both files share the same folder; if you run it from anywhere else (e.g. your Deluge `ProgramData` folder) it falls back to the default `C:\ProgramData\deluge`. So if you have customized `LOG_DIR`, keep the poller alongside `deluge_watchdog.bat`.
 2. Create a **new** Windows Task Scheduler task:
    * **Trigger:** "At log on" AND "Repeat task every 15 minutes" indefinitely.
    * **Action:** "Start a program" -> `powershell.exe`
@@ -66,6 +68,7 @@ By querying the Windows NDIS network stack instead of the Deluge RPC port, this 
 
 ### Version History
 
+* **v1.5.1:** Hardened state management and disk I/O. The optional Traffic Poller now uses transactional atomic writes (temp-file + `move`) for its state cache, eliminating edge-case corruption during adapter resets. The Log Analyzer was optimized to parse the newest log from memory rather than re-reading it from disk for the "Last 10 Events" panel. Retired the redundant uptime state-file (uptime is now sourced exclusively from the OS process clock), consolidated the duplicated VPN IP-extraction logic into a single `:GET_VPN_IP` routine, and hardened the uptime query against transient duplicate daemon instances. Corrected the optional sidecar path and configuration documentation.
 * **v1.5.0:** Implemented dynamic configuration inheritance (PowerShell scripts now read paths directly from the Batch SSoT). Added self-reporting telemetry to the Sidecar and Dashboard to capture and display file-system/math errors without silent failures. Finalized documentation naming consistencies.
 * **v1.4.1:** Implemented incident debouncing in Log Analyzer to group VPN drops accurately. Added optional decoupled `DelugeTrafficPoller.ps1` sidecar for bandwidth tracking. Added atomic 50MB log rotation to core script.
 * **v1.4.0:** Implemented Atomic OS Uptime sync; Universal Regex IP extraction; Atomic State Writes; Bulletproof User Domain checks.
